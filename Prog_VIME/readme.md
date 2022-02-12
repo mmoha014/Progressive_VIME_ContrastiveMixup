@@ -8,7 +8,7 @@ conda activate prog_vime
 
 pip install -r requirements.txt
 ```
-To run experiments they are launched from the train-trafVio.py file. The source code for Traffic Violation dataset is provided. To run **Progressive Vime** on the dataset, 
+To run experiments they are launched from the train-trafVio.py file. The source code for Traffic Violation dataset is provided. To run _Progressive Vime_ on the dataset, 
 use the following command:
 
 ```
