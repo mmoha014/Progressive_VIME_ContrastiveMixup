@@ -14,3 +14,5 @@ To run experiment it is launched from the train.py file, run the following comma
 ```
 python train.py
 ```
+
+We do not use early stopping for runs. The table in the paper shows  the best accuracy among all runs.
