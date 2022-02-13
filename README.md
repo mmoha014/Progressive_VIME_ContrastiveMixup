@@ -1,3 +1,3 @@
-# Progressive_VIME_ContrastiveMixup
+# _Progressive VIME_ and _Progressive Contrastive Mixup_
 
 Please look at the readme file inside the folders.
