@@ -12,6 +12,7 @@ vime_semi.py
 """
 
 # Necessary packages
+import scipy
 import tensorflow as tf
 import tensorflow.compat.v1 as tf
 tf.disable_v2_behavior() 
@@ -25,10 +26,13 @@ from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import Dense
 from tensorflow.keras.callbacks import EarlyStopping
 # from tensorflow.contrib import layers as contrib_layers
-from tensorflow.keras import layers as contrib_layers
+# from tensorflow import layers as contrib_layers
 # from vime_utils import mask_generator, pretext_generator
 from sklearn.metrics import accuracy_score, roc_auc_score
 import tensorflow.keras.backend as K
+import random as python_random
+python_random.seed(123)
+tf.set_random_seed(123) 
 #============================= UTILS ==========================
 def mask_generator (p_m, x):
   """Generate mask vector.
@@ -117,7 +121,7 @@ def perf_metric (metric, y_test, y_test_hat):
   return result
 #===================== VIME-SEMI ==============================
 def vime_semi(x_train, y_train, x_unlab, x_test, parameters, 
-              p_m, K, beta, file_name, total_train):
+              p_m, K, beta, file_name, total_train,sample_weight, class_weight, epoch, pseudoLabels):
   """Semi-supervied learning part in VIME.
   
   Args:
@@ -147,7 +151,7 @@ def vime_semi(x_train, y_train, x_unlab, x_test, parameters,
   #onehot[np.arange(y_train.size), y_train] = 1
   #y_train=onehot
   print("y_train.shape: ", y_train.shape)
-  data_dim = 26 #len(x_train[0, :])
+  data_dim = len(x_train[0, :])
   label_dim = len(y_train[0,:])
   
   # Divide training and validation sets (9:1)
@@ -165,11 +169,14 @@ def vime_semi(x_train, y_train, x_unlab, x_test, parameters,
   
   # Input placeholder
   # Labeled data
-  x_input = tf.placeholder(tf.float32, [None, data_dim])
-  y_input = tf.placeholder(tf.float32, [None, label_dim])
+  x_input =  tf.compat.v1.placeholder(tf.float32, [None, data_dim])
+  y_input =  tf.compat.v1.placeholder(tf.float32, [None, label_dim])
+  # s_weights = tf.placeholder(tf.float32,[None])
+  # c_weights = tf.placeholder(tf.float32,[None])
   
   # Augmented unlabeled data
-  xu_input = tf.placeholder(tf.float32, [None, None, data_dim])
+  xu_input =  tf.compat.v1.placeholder(tf.float32, [None, None, data_dim])
+ 
   
   ## Predictor
   def predictor(x_input):
@@ -184,28 +191,12 @@ def vime_semi(x_train, y_train, x_unlab, x_test, parameters,
     """
     with tf.variable_scope('predictor', reuse=tf.AUTO_REUSE):     
       # Stacks multi-layered perceptron
-      # inter_layer = contrib_layers.fully_connected(x_input, 
-      #                                              hidden_dim, 
-      #                                              activation_fn=act_fn)
-      # inter_layer = contrib_layers.fully_connected(inter_layer, 
-      #                                              hidden_dim, 
-      #                                              activation_fn=act_fn)
-
-      # y_hat_logit = contrib_layers.fully_connected(inter_layer, 
-      #                                              label_dim, 
-      #                                              activation_fn=None)
-      # tf.compat.v1.layers.dense(inputs=x_input,units=hidden_dim,activation=act_fn)
-      # inp = contrib_layers.InputLayer(x_input)
-      inter_layer = tf.compat.v1.layers.dense(x_input, 
-                                                   256, 
-                                                   activation=act_fn)
-      inter_layer = tf.compat.v1.layers.dense(inter_layer, 
-                                                   512, 
-                                                   activation=act_fn)
-
-      y_hat_logit = tf.compat.v1.layers.dense(inter_layer, 
-                                                   label_dim, 
-                                                   activation=None)
+      # inter_layer = contrib_layers.fully_connected(x_input, hidden_dim, activation_fn=act_fn)
+      inter_layer = tf.compat.v1.layers.dense(x_input,hidden_dim, activation=act_fn)
+      # inter_layer = contrib_layers.fully_connected(inter_layer, hidden_dim, activation_fn=act_fn)
+      inter_layer = tf.compat.v1.layers.dense(inter_layer,hidden_dim, activation=act_fn)
+      # y_hat_logit = contrib_layers.fully_connected(inter_layer,  label_dim,  activation_fn=None)
+      y_hat_logit = tf.compat.v1.layers.dense(inter_layer, label_dim,activation=None)
       y_hat = tf.nn.softmax(y_hat_logit)
 
     return y_hat_logit, y_hat
@@ -218,14 +209,15 @@ def vime_semi(x_train, y_train, x_unlab, x_test, parameters,
   # Supervised loss
   y_loss = tf.losses.softmax_cross_entropy(y_input, y_hat_logit)  
   # Unsupervised loss
+  y_loss = tf.losses.softmax_cross_entropy(y_input, y_hat_logit)  
+  
   yu_loss = tf.reduce_mean(tf.nn.moments(yv_hat_logit, axes = 0)[1])
   
   # Define variables
   p_vars = [v for v in tf.trainable_variables() \
             if v.name.startswith('predictor')]    
   # Define solver
-  solver = tf.train.AdamOptimizer().minimize(y_loss + \
-                                 beta * yu_loss, var_list=p_vars)
+  solver = tf.train.AdamOptimizer().minimize(y_loss + beta * yu_loss, var_list=p_vars)
 
   # Load encoder from self-supervised model
   encoder = keras.models.load_model(file_name)
@@ -251,7 +243,8 @@ def vime_semi(x_train, y_train, x_unlab, x_test, parameters,
     # Select a batch of labeled data
     batch_idx = np.random.permutation(len(x_train[:, 0]))[:batch_size]
     x_batch = x_train[batch_idx, :]
-    y_batch = y_train[batch_idx, :]    
+    y_batch = y_train[batch_idx, :]
+    # w = weights[batch_idx]
     
     # Encode labeled data
     x_batch = encoder.predict(x_batch)  
@@ -259,6 +252,8 @@ def vime_semi(x_train, y_train, x_unlab, x_test, parameters,
     # Select a batch of unlabeled data
     batch_u_idx = np.random.permutation(len(x_unlab[:, 0]))[:batch_size]
     xu_batch_ori = x_unlab[batch_u_idx, :]
+
+    
     
     # Augment unlabeled data
     xu_batch = list()
@@ -272,6 +267,7 @@ def vime_semi(x_train, y_train, x_unlab, x_test, parameters,
       # Encode corrupted samples
       xu_batch_temp = encoder.predict(xu_batch_temp)
       xu_batch = xu_batch + [xu_batch_temp]
+
     # Convert list to matrix
     xu_batch = np.asarray(xu_batch)
 
@@ -337,10 +333,9 @@ def vime_semi(x_train, y_train, x_unlab, x_test, parameters,
 
   all_batch = np.asarray(np.vstack(all_batch))
   #=======================================================================
-  #import pdb; pdb.set_trace()
   pseudoLabels = sess.run(y_hat, feed_dict={x_input: all_batch})
   
-  return y_test_hat,pseudoLabels
+  return y_test_hat,pseudoLabels #, weights, class_weights
 
 
 def vime_self (x_unlab, p_m, alpha, parameters):
@@ -360,20 +355,17 @@ def vime_self (x_unlab, p_m, alpha, parameters):
   _, dim = x_unlab.shape
   epochs = parameters['epochs']
   batch_size = parameters['batch_size']
+    
   
   # Build model  
   
-  inputs = contrib_layers.Input(shape=(dim,))
+  inputs = tf.keras.Input(shape=(dim,))
   # Encoder  
-  h = contrib_layers.Dense(int(256), activation='relu', name='encoder1')(inputs)  
-  h = contrib_layers.Dense(int(128), activation='relu', name='encoder2')(h)  
-  h = contrib_layers.Dense(int(26), activation='relu', name='encoder3')(h)  
+  h = Dense(int(dim), activation='relu')(inputs)  
   # Mask estimator
-  output_1 = contrib_layers.Dense(dim, activation='sigmoid', name = 'mask')(h)  
+  output_1 = Dense(dim, activation='sigmoid', name = 'mask')(h)  
   # Feature estimator
-  output_2 = contrib_layers.Dense(dim, activation='sigmoid', name = 'feature')(h)
-  #Projection Network
-  
+  output_2 = Dense(dim, activation='sigmoid', name = 'feature')(h)
   
   model = Model(inputs = inputs, outputs = [output_1, output_2])
   
@@ -440,11 +432,11 @@ def mlp(x_train, y_train, x_test, parameters):
 
   # Build model
   model = Sequential()
-  model.add(Dense(256, input_dim = data_dim, activation = act_fn))
-  model.add(Dense(128, activation = act_fn))  
+  model.add(Dense(hidden_dim, input_dim = data_dim, activation = act_fn))
+  model.add(Dense(hidden_dim, activation = act_fn))  
   model.add(Dense(label_dim, activation = 'softmax'))
   
-  model.compile(loss = 'categorical_crossentropy', optimizer='sgd', 
+  model.compile(loss = 'categorical_crossentropy', optimizer='adam', 
                 metrics = ['acc'])
   
   es = EarlyStopping(monitor='val_loss', mode = 'min', 
